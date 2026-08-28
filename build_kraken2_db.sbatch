@@ -31,6 +31,9 @@ set -euo pipefail
 # conda env with kraken2 / kraken2-build (self-contained -- no libexec PATH hack, no
 # jellyfish, unlike KrakenUniq).
 export PATH=/data/home/mgomes/.conda/envs/blast_env/bin:$PATH
+# GNU parallel must ALSO be on PATH (used by the parallel masking step). If it lives in
+# a different conda env, add that env's bin here too, e.g.:
+#   export PATH=/data/home/mgomes/.conda/envs/<env-with-parallel>/bin:$PATH
 export THREADS=${SLURM_CPUS_PER_TASK:-8}
 export OMP_NUM_THREADS=${THREADS}
 
@@ -41,6 +44,7 @@ echo "[sbatch] host = $(hostname) job = ${SLURM_JOB_ID:-none} threads = $THREADS
 echo "[sbatch] build dir: $BUILD_DIR"
 echo "[sbatch] kraken2-build: $(command -v kraken2-build)"
 echo "[sbatch] dustmasker: $(command -v dustmasker)"
+echo "[sbatch] parallel: $(command -v parallel || echo 'NOT FOUND -- add its conda env bin to PATH above')"
 # --mem=700G sets SLURM_MEM_PER_NODE (MB); SLURM_MEM_PER_CPU stays unset in that case.
 echo "[sbatch] requested cpus=$THREADS  mem=${SLURM_MEM_PER_NODE:-$(( ${SLURM_MEM_PER_CPU:-0} * ${SLURM_CPUS_PER_TASK:-1} ))}MB"
 

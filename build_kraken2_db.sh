@@ -47,8 +47,8 @@ SHARD_DIR=${SHARD_DIR:-$DB.shards} # transient masked shards (deleted as added)
 KMER=${KMER:-22}
 MINIMIZER=${MINIMIZER:-20}
 SPACES=${SPACES:-5}
-THREADS=${THREADS:-8}
-NSHARDS=${NSHARDS:-16} # masked genomes are concatenated into this many shards
+THREADS=${THREADS:-8}          # parallel masking jobs (one dustmasker per core) + build threads
+ROUND_SIZE=${ROUND_SIZE:-2000} # genomes masked per round before add-to-library (bounds scratch peak)
 
 # run modes
 PILOT_N=${PILOT_N:-0} # >0 : only the first N genomes (de-risk time/size + taxid headers)
@@ -58,9 +58,10 @@ STORAGE_DIR=${STORAGE_DIR:-} # set: rsync the finished runtime DB here (e.g. /eq
 # tools (override if not on PATH)
 K2BUILD=${K2BUILD:-kraken2-build}
 DUSTMASKER=${DUSTMASKER:-dustmasker}
+PARALLEL=${PARALLEL:-parallel}   # GNU parallel (from your conda env; must be on PATH)
 
 echo "[k2db] SCR=$SCR"
-echo "[k2db] DB=$DB  k=$KMER  l=$MINIMIZER  s=$SPACES  threads=$THREADS  shards=$NSHARDS"
+echo "[k2db] DB=$DB  k=$KMER  l=$MINIMIZER  s=$SPACES  threads=$THREADS  round=$ROUND_SIZE"
 [ "$PILOT_N" -gt 0 ] && echo "[k2db] *** PILOT MODE: first $PILOT_N genomes ***"
 
 # 0) sanity: inputs present
@@ -73,6 +74,8 @@ if [ "$n_fastas" -eq 0 ] || [ "$n_sum" -eq 0 ]; then
 fi
 command -v "$K2BUILD"    >/dev/null || { echo "ERROR: $K2BUILD not on PATH (conda activate taxclassification)" >&2; exit 1; }
 command -v "$DUSTMASKER" >/dev/null || { echo "ERROR: $DUSTMASKER not on PATH" >&2; exit 1; }
+command -v "$PARALLEL"   >/dev/null || { echo "ERROR: $PARALLEL (GNU parallel) not on PATH -- activate the conda env that has it" >&2; exit 1; }
+[ -x "$SELF_DIR/mask_one.sh" ] || { echo "ERROR: helper $SELF_DIR/mask_one.sh missing or not executable" >&2; exit 1; }
 echo "[k2db] inputs OK: $n_fastas genomes, $n_sum summaries"
 
 mkdir -p "$DB" "$SHARD_DIR"
@@ -96,13 +99,15 @@ done < <(awk -F '\t' 'FNR>1 && $0 !~ /^#/ {print $1"\t"$6}' \
 echo "[k2db] taxid map: ${#TAXID[@]} accessions"
 
 
-# 3) mask + hard-mask + tag + shard + add-to-library
-# Per genome:
-#   dustmasker identifies repetitive/low-complexity regions and we hard-mask them to N
-#   Adds >kraken:taxid|<taxid>| into every header, so the sequences are tagged
-#   Genomes are concatenated into NSHARDS shards; each shard is added to the library
-#   then deleted, so disk never holds the whole masked FASTA at once.
-# Identical to the KrakenUniq masking -- keeping it the same makes the two DBs comparable.
+# 3) mask + hard-mask + tag + add-to-library  (PARALLEL masking)
+# Per genome: dustmasker finds low-complexity regions -> mask_one.sh hard-masks them to
+# N and injects >kraken:taxid|<taxid>| into every header. Masking is the slow, one-core-
+# per-genome step, so we run it with GNU parallel across THREADS cores. Work is done in
+# ROUND_SIZE-genome rounds: each round masks in parallel into per-slot shards ({%} = slot
+# 1..THREADS, so appends within a slot are serial and never collide), then adds those
+# shards to the library and deletes them -- bounding the scratch peak. add-to-library
+# itself stays SERIAL (kraken2 races on shared DB state if run concurrently). Same masking
+# recipe as KrakenUniq, so the two DBs stay comparable.
 
 # If the library is already populated, skip masking/add so the index build (step 4)
 # can be re-run without redoing the expensive masking step.
@@ -117,55 +122,47 @@ fi
 if [ "$SKIP_LIBRARY" -eq 0 ]; then
   mapfile -t FASTAS < <(printf '%s\n' "$FASTAS_DIR"/*_genomic.fna.gz | sort)
   [ "$PILOT_N" -gt 0 ] && FASTAS=("${FASTAS[@]:0:$PILOT_N}")
-  total=${#FASTAS[@]}
-  per_shard=$(( (total + NSHARDS - 1) / NSHARDS )); [ "$per_shard" -lt 1 ] && per_shard=1
 
-  # adds current shard to the library, then frees its space
-  flush_shard() {
-    local sf="$1" # shard file
-    [ -s "$sf" ] || { rm -f "$sf"; return; }
-    echo "[k2db] add-to-library $(basename "$sf") ($(du -h "$sf" | cut -f1))"
-    # kraken2-build --add-to-library exits non-zero on real failure (the ERR trap
-    # catches it) -- no exit-255 workaround needed, unlike KrakenUniq. Note Kraken2
-    # stores the file under library/added/ with a generated name, so we don't check
-    # for the original basename; we trust the exit status.
-    "$K2BUILD" --db "$DB" --add-to-library "$sf" --no-masking
-    rm -f "$sf" # free space
-  }
-
-  shard=0; in_shard=0; masked=0; missing=0
-  shard_file="$SHARD_DIR/shard_$shard.fna"; : > "$shard_file"
+  # Phase A (fast, serial): build the work list  fasta<TAB>taxid, dropping any genome
+  # whose accession has no taxid in the summaries.
+  work="$SHARD_DIR/work.tsv"; : > "$work"
+  missing=0
   for f in "${FASTAS[@]}"; do
-    bn=$(basename "$f")
-    acc=$(printf '%s' "$bn" | grep -oE '^GC[FA]_[0-9]+\.[0-9]+' || true) # accession ID
-    t="${TAXID[$acc]:-}" # taxid for this accession (from the summary files)
+    acc=$(printf '%s' "$(basename "$f")" | grep -oE '^GC[FA]_[0-9]+\.[0-9]+' || true)
+    t="${TAXID[$acc]:-}"
     if [ -z "$t" ]; then
-      echo "[k2db] WARN: no taxid for '$acc' ($bn) -- skipping" >&2
+      echo "[k2db] WARN: no taxid for '$acc' -- skipping" >&2
       missing=$((missing+1)); continue
     fi
-
-    # mask + inject >kraken:taxid|<taxid>| header + hard-mask (lowercase -> N)
-    if ! { zcat "$f" \
-            | "$DUSTMASKER" -infmt fasta -outfmt fasta \
-            | awk -v t="$t" '/^>/{sub(/^>/,">kraken:taxid|"t"|")} !/^>/{gsub(/[a-z]/,"N")} 1' \
-            >> "$shard_file"; }; then
-      echo "[k2db] WARN: masking failed for $bn -- skipping" >&2
-      continue
-    fi
-
-    masked=$((masked+1)); in_shard=$((in_shard+1))
-    if (( masked % 500 == 0 )); then echo "[k2db] masked $masked / $total"; fi
-
-    if [ "$in_shard" -ge "$per_shard" ]; then
-      flush_shard "$shard_file"
-      shard=$((shard+1)); in_shard=0
-      shard_file="$SHARD_DIR/shard_$shard.fna"; : > "$shard_file"
-    fi
+    printf '%s\t%s\n' "$f" "$t" >> "$work"
   done
+  n_work=$(wc -l < "$work")
+  echo "[k2db] to mask: $n_work genomes ($missing skipped for missing taxid); ${THREADS}-way parallel, round=$ROUND_SIZE"
 
-  flush_shard "$shard_file" # last partial shard
+  if [ "$n_work" -gt 0 ]; then
+    export DUSTMASKER   # mask_one.sh reads it (env inherited by parallel's children)
+    round=0
+    split -l "$ROUND_SIZE" "$work" "$SHARD_DIR/round_"
+    for chunk in "$SHARD_DIR"/round_*; do
+      round=$((round+1))
+      echo "[k2db] round $round: masking $(wc -l < "$chunk") genomes"
+      # {1}=fasta {2}=taxid {%}=slot(1..THREADS) -> one shard per slot (no write clashes)
+      "$PARALLEL" --jobs "$THREADS" --colsep '\t' \
+        "$SELF_DIR/mask_one.sh {1} {2} $SHARD_DIR/shard_{%}.fna" :::: "$chunk"
+      # add-to-library the round's shards SERIALLY, then free their space
+      for shard in "$SHARD_DIR"/shard_*.fna; do
+        [ -s "$shard" ] || { rm -f "$shard" 2>/dev/null || true; continue; }
+        echo "[k2db]   add-to-library $(basename "$shard") ($(du -h "$shard" | cut -f1))"
+        "$K2BUILD" --db "$DB" --add-to-library "$shard" --no-masking
+        rm -f "$shard"
+      done
+      rm -f "$chunk"
+    done
+  fi
+
+  rm -f "$work"
   rmdir "$SHARD_DIR" 2>/dev/null || true
-  echo "[k2db] masked $masked genomes into library ($missing skipped for missing taxid)"
+  echo "[k2db] masking + add-to-library complete: $n_work genomes"
 
   # Optional: clean temporary .gz (the original should live on /path/to/storage/folder/).
   if [ "$DELETE_GZ" = 1 ] && [ "$PILOT_N" -eq 0 ]; then
