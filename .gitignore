@@ -1,0 +1,5 @@
+fastas/
+kraken2_refseq232_k22/
+kraken2_refseq232_k22.shards/
+assembly_summary_*
+ftp_*

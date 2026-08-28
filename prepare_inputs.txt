@@ -1,0 +1,71 @@
+This directory documents the construction of a Kraken v1 reference database for metagenomic classification, following the approach of Vernot et al. (2021), but using the current RefSeq Genomes FTP content (release 232) downloaded on January 3rd 2026.
+
+The database consists of RefSeq genomes from the following major taxonomic groups, filtered to assemblies labeled "reference genome" or "representative genome":
+archaea (766)
+bacteria (21604)
+fungi (661)
+invertebrate (480)
+plant (196)
+protozoa (115)
+vertebrate_mammalian (248)
+vertebrate_other (507)
+viral (15044) 
+
+
+1) Make a download list (reference/representative only)
+
+BASE=ftp://ftp.ncbi.nlm.nih.gov/genomes/refseq
+
+
+for G in archaea bacteria fungi invertebrate plant protozoa vertebrate_mammalian vertebrate_other viral; do
+  wget -q -O assembly_summary_${G}.txt ${BASE}/${G}/assembly_summary.txt
+  awk -F '\t' '$0 !~ /^#/ && ($5=="reference genome" || $5=="representative genome") {print $20}' \
+    assembly_summary_${G}.txt > ftp_paths_${G}.txt
+done
+
+cat ftp_paths_*.txt | sort -u > ftp_paths_all.txt
+
+There are no "reference genome" or "representative genome" for viruses or plasmids, so let's download all of them.
+
+awk -F '\t' '$0 !~ /^#/ {print $20}' assembly_summary_viral.txt > ftp_paths_viral.txt
+
+
+2) Download genomic FASTA for each assembly
+
+mkdir -p fastas
+while read -r p; do
+  asm=$(basename "$p")
+  wget -q -c -P fastas "${p}/${asm}_genomic.fna.gz"
+done < ftp_paths_all.txt
+
+while read -r p; do
+  asm=$(basename "$p")
+  wget -q -c -P fastas "${p}/${asm}_genomic.fna.gz"
+done < ftp_paths_viral.txt
+
+wget -c -P fastas -r -nd -np -l 1 \
+  -A "plasmid.*.genomic.fna.gz" \
+  ftp://ftp.ncbi.nlm.nih.gov/refseq/release/plasmid/
+
+
+3) DUST-mask (low complexity) like Vernot et al (2021) did
+
+mkdir -p masked
+for f in fastas/*_genomic.fna.gz; do
+  bn=$(basename "$f" .gz)
+  gunzip -c "$f" | dustmasker -infmt fasta -outfmt fasta > "masked/${bn%.fna}.dustmasked.fna"
+done
+
+
+4) Build Kraken v1.1.1 DB with k=20
+
+DB=kraken_refseq_current_k20
+kraken-build --db "$DB" --download-taxonomy
+
+for f in masked/*.dustmasked.fna; do
+  kraken-build --db "$DB" --add-to-library "$f"
+done
+
+kraken-build --db "$DB" --kmer-len 20 --build
+
+
