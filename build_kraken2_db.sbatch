@@ -3,8 +3,8 @@
 #SBATCH --account=eq_peyregne
 #SBATCH --partition=debug
 #SBATCH --nodelist=geddy
-#SBATCH --cpus-per-task=128
-#SBATCH --mem=1000G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=1100G
 #SBATCH --hint=compute_bound
 #SBATCH --output=/data/home/mgomes/logs/k2db_build_%j.out
 #SBATCH --error=/data/home/mgomes/logs/k2db_build_%j.err

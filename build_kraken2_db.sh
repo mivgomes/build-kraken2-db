@@ -56,7 +56,7 @@ DUSTMASKER=${DUSTMASKER:-dustmasker}
 PARALLEL=${PARALLEL:-parallel}   # GNU parallel (from your conda env; must be on PATH)
 
 echo "[k2db] SCR=$SCR"
-echo "[k2db] DB=$DB  k=$KMER  l=$MINIMIZER  s=$SPACES  threads=$THREADS  round=$ROUND_SIZE"
+echo "[k2db] DB=$DB  k=$KMER  l=$MINIMIZER threads=$THREADS  round=$ROUND_SIZE"
 [ "$PILOT_N" -gt 0 ] && echo "[k2db] *** PILOT MODE: first $PILOT_N genomes ***"
 
 # 0) sanity: inputs present
@@ -170,7 +170,7 @@ fi
 # 4) build the index (minimizer-based; lighter/faster than KrakenUniq's exact k-mers)
 echo "[k2db] building index (k=$KMER, l=$MINIMIZER, threads=$THREADS)"
 # --no-masking: we already hard-masked above, so don't let kraken2-build dustmask again.
-"$K2BUILD" --build --db "$DB" --kmer-len "$KMER" --minimizer-len "$MINIMIZER" --threads "$THREADS" --no-masking --max-db-size 800000000000
+"$K2BUILD" --build --db "$DB" --kmer-len "$KMER" --minimizer-len "$MINIMIZER" --threads "$THREADS" --no-masking --max-db-size 1000000000000
 
 echo "[k2db] BUILD DONE: $DB"
 ls -lh "$DB"/*.k2d 2>/dev/null || true
