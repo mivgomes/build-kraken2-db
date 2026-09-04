@@ -46,7 +46,7 @@ THREADS=${THREADS}          # parallel masking jobs (one dustmasker per core) + 
 ROUND_SIZE=${ROUND_SIZE:-2000} # genomes masked per round before add-to-library (bounds scratch peak)
 
 # run modes
-PILOT_N=${PILOT_N:-0} # >0 : only the first N genomes (de-risk time/size + taxid headers)
+TEST_N=${TEST_N:-0} # >0 : only the first N genomes (de-risk time/size + taxid headers)
 DELETE_GZ=${DELETE_GZ:-0} # 1  : delete the staged *.gz after masking (original stays on /data)
 STORAGE_DIR=${STORAGE_DIR:-} # set: rsync the finished runtime DB here (e.g. /eq_Peyregne/.../kraken2_refseq232_k22)
 
@@ -56,8 +56,8 @@ DUSTMASKER=${DUSTMASKER:-dustmasker}
 PARALLEL=${PARALLEL:-parallel}   # GNU parallel (from your conda env; must be on PATH)
 
 echo "[k2db] SCR=$SCR"
-echo "[k2db] DB=$DB  k=$KMER  l=$MINIMIZER threads=$THREADS  round=$ROUND_SIZE"
-[ "$PILOT_N" -gt 0 ] && echo "[k2db] *** PILOT MODE: first $PILOT_N genomes ***"
+echo "[k2db] DB=$DB  k=$KMER  l=$MINIMIZER  s=0  threads=$THREADS  round=$ROUND_SIZE"
+[ "$TEST_N" -gt 0 ] && echo "[k2db] *** TEST MODE: first $TEST_N genomes ***"
 
 # 0) sanity: inputs present
 n_fastas=$(printf '%s\n' "$FASTAS_DIR"/*_genomic.fna.gz 2>/dev/null | wc -l)
@@ -116,7 +116,7 @@ fi
 
 if [ "$SKIP_LIBRARY" -eq 0 ]; then
   mapfile -t FASTAS < <(printf '%s\n' "$FASTAS_DIR"/*_genomic.fna.gz | sort)
-  [ "$PILOT_N" -gt 0 ] && FASTAS=("${FASTAS[@]:0:$PILOT_N}")
+  [ "$TEST_N" -gt 0 ] && FASTAS=("${FASTAS[@]:0:$TEST_N}")
 
   # Phase A (fast, serial): build the work list  fasta<TAB>taxid, dropping any genome
   # whose accession has no taxid in the summaries.
@@ -160,7 +160,7 @@ if [ "$SKIP_LIBRARY" -eq 0 ]; then
   echo "[k2db] masking + add-to-library complete: $n_work genomes"
 
   # Optional: clean temporary .gz (the original should live on /path/to/storage/folder/).
-  if [ "$DELETE_GZ" = 1 ] && [ "$PILOT_N" -eq 0 ]; then
+  if [ "$DELETE_GZ" = 1 ] && [ "$TEST_N" -eq 0 ]; then
     echo "[k2db] deleting staged gz to free space"
     rm -f "$FASTAS_DIR"/*_genomic.fna.gz
   fi
@@ -168,9 +168,12 @@ if [ "$SKIP_LIBRARY" -eq 0 ]; then
 fi
 
 # 4) build the index (minimizer-based; lighter/faster than KrakenUniq's exact k-mers)
-echo "[k2db] building index (k=$KMER, l=$MINIMIZER, threads=$THREADS)"
+echo "[k2db] building index (k=$KMER, l=$MINIMIZER, s=0, threads=$THREADS)"
+# --minimizer-spaces MUST be passed explicitly: kraken2-build defaults to 7, NOT 0.
+# With l=22, s=7 exceeds the s <= l/4 ceiling (kraken2 rejects it), and any s>0
+# shrinks the match to l-s informative bases -- the saturated-database failure mode.
 # --no-masking: we already hard-masked above, so don't let kraken2-build dustmask again.
-"$K2BUILD" --build --db "$DB" --kmer-len "$KMER" --minimizer-len "$MINIMIZER" --threads "$THREADS" --no-masking --max-db-size 1000000000000
+"$K2BUILD" --build --db "$DB" --kmer-len "$KMER" --minimizer-len "$MINIMIZER" --minimizer-spaces 0 --threads "$THREADS" --no-masking --max-db-size 1000000000000
 
 echo "[k2db] BUILD DONE: $DB"
 ls -lh "$DB"/*.k2d 2>/dev/null || true

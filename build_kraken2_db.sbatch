@@ -16,9 +16,9 @@
 #   cd /scratch2/mgomes/build-kraken2-db
 #
 # Test run first (~50 genomes incl. human GRCh38 + mouse, throwaway DB):
-#   PILOT_N=50 DB=$PWD/DB_pilot sbatch build_kraken2_db.sbatch
+#   TEST_N=50 DB=$PWD/DB_test sbatch build_kraken2_db.sbatch
 #
-# Full run (after the pilot is OK), optionally copying the result to storage:
+# Full run (after the test is OK), optionally copying the result to storage:
 #   DELETE_GZ=1 STORAGE_DIR=/data/home/mgomes/data/ines/kraken2_refseq232_k22 sbatch build_kraken2_db.sbatch
 
 # kraken2_refseq232_k22_gpu1
