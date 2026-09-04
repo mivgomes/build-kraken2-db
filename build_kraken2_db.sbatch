@@ -3,9 +3,8 @@
 #SBATCH --account=eq_peyregne
 #SBATCH --partition=debug
 #SBATCH --nodelist=geddy
-#SBATCH --nodes=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=500G
+#SBATCH --cpus-per-task=128
+#SBATCH --mem=1000G
 #SBATCH --hint=compute_bound
 #SBATCH --output=/data/home/mgomes/logs/k2db_build_%j.out
 #SBATCH --error=/data/home/mgomes/logs/k2db_build_%j.err
@@ -22,6 +21,8 @@
 # Full run (after the pilot is OK), optionally copying the result to storage:
 #   DELETE_GZ=1 STORAGE_DIR=/data/home/mgomes/data/ines/kraken2_refseq232_k22 sbatch build_kraken2_db.sbatch
 
+# kraken2_refseq232_k22_gpu1
+
 # NOTE: the masking (step 3) is the serial dustmasker loop as the
 # KrakenUniq build, so it is still the bottleneck (~days for the full set). Only the
 # index build (step 4) is lighter/faster for Kraken2.
@@ -30,15 +31,20 @@ set -euo pipefail
 
 # conda env with kraken2 / kraken2-build (self-contained -- no libexec PATH hack, no
 # jellyfish, unlike KrakenUniq).
+
+
 export PATH=/data/home/mgomes/.conda/envs/blast_env/bin:$PATH
+#export PATH=/home/mgomes/.conda/envs/taxclassification/bin:$PATH
+
+
 # GNU parallel must ALSO be on PATH (used by the parallel masking step). If it lives in
 # a different conda env, add that env's bin here too, e.g.:
 #   export PATH=/data/home/mgomes/.conda/envs/<env-with-parallel>/bin:$PATH
-export THREADS=${SLURM_CPUS_PER_TASK:-8}
+export THREADS=${SLURM_CPUS_PER_TASK}
 export OMP_NUM_THREADS=${THREADS}
 
 # The build folder = where we submitted from (SLURM_SUBMIT_DIR), or override BUILD_DIR.
-BUILD_DIR=${BUILD_DIR:-${SLURM_SUBMIT_DIR:-/scratch2/mgomes/build-kraken2-db}}
+BUILD_DIR=${BUILD_DIR:-${SLURM_SUBMIT_DIR:-/scratch2/build-kraken2-db}}
 cd "$BUILD_DIR"
 echo "[sbatch] host = $(hostname) job = ${SLURM_JOB_ID:-none} threads = $THREADS"
 echo "[sbatch] build dir: $BUILD_DIR"

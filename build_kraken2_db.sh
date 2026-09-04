@@ -40,14 +40,9 @@ DB=${DB:-$SCR/kraken2_refseq232_k22} # DB built here (fast local disk)
 SHARD_DIR=${SHARD_DIR:-$DB.shards} # transient masked shards (deleted as added)
 
 # build parameters
-# Kraken2 minimizer constraints: MINIMIZER (l) must be <= KMER (k) and <= 31;
-# SPACES (s) must be small relative to l (kraken2-build validates and errors with the
-# exact max). For k=22 we use l=20, s=5. Spaced seeds also tolerate mismatches, which
-# helps C->T-damaged reads.
 KMER=${KMER:-22}
-MINIMIZER=${MINIMIZER:-20}
-SPACES=${SPACES:-5}
-THREADS=${THREADS:-8}          # parallel masking jobs (one dustmasker per core) + build threads
+MINIMIZER=${MINIMIZER:-22}
+THREADS=${THREADS}          # parallel masking jobs (one dustmasker per core) + build threads
 ROUND_SIZE=${ROUND_SIZE:-2000} # genomes masked per round before add-to-library (bounds scratch peak)
 
 # run modes
@@ -173,11 +168,9 @@ if [ "$SKIP_LIBRARY" -eq 0 ]; then
 fi
 
 # 4) build the index (minimizer-based; lighter/faster than KrakenUniq's exact k-mers)
-echo "[k2db] building index (k=$KMER, l=$MINIMIZER, s=$SPACES, threads=$THREADS)"
+echo "[k2db] building index (k=$KMER, l=$MINIMIZER, threads=$THREADS)"
 # --no-masking: we already hard-masked above, so don't let kraken2-build dustmask again.
-"$K2BUILD" --db "$DB" --build \
-  --kmer-len "$KMER" --minimizer-len "$MINIMIZER" --minimizer-spaces "$SPACES" \
-  --threads "$THREADS" --no-masking
+"$K2BUILD" --build --db "$DB" --kmer-len "$KMER" --minimizer-len "$MINIMIZER" --threads "$THREADS" --no-masking --max-db-size 800000000000
 
 echo "[k2db] BUILD DONE: $DB"
 ls -lh "$DB"/*.k2d 2>/dev/null || true
